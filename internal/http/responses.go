@@ -78,7 +78,22 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	agentID := extractAgentID(r, req.Model)
 	userID := extractUserID(r)
 
-	loop, err := h.agents.Get(r.Context(), agentID)
+	// Inject tenant context from auth BEFORE agent lookup so the resolver
+	// can query the correct tenant-scoped data in the database.
+	agentCtx := r.Context()
+	if auth.CrossTenant {
+		if auth.TenantID != (uuid.UUID{}) {
+			agentCtx = store.WithTenantID(agentCtx, auth.TenantID)
+		} else {
+			agentCtx = store.WithTenantID(agentCtx, store.MasterTenantID)
+		}
+	} else if auth.TenantID != (uuid.UUID{}) {
+		agentCtx = store.WithTenantID(agentCtx, auth.TenantID)
+	} else {
+		agentCtx = store.WithTenantID(agentCtx, store.MasterTenantID)
+	}
+
+	loop, err := h.agents.Get(agentCtx, agentID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"agent not found: %s"}`, agentID), http.StatusNotFound)
 		return
