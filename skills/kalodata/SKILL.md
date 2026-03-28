@@ -36,7 +36,7 @@ function norm(v){if(!v||v==='unspecified'||v==='no_restriction')return'None';ret
 function loadCk(){if(!E(CF)){console.log(JSON.stringify({error:'cookies.json not found. Ask user for J2Team cookies.'}));process.exit(1)}
 const d=JSON.parse(R(CF,'utf8')),c=d.cookies||(Array.isArray(d)?d:[]);
 return c.map(x=>({name:x.name,value:x.value,domain:x.domain,path:x.path||'/',expires:x.expirationDate||Math.floor(Date.now()/1000)+86400,httpOnly:x.httpOnly||false,secure:x.secure||false,sameSite:norm(x.sameSite)}))}
-async function scrape(url,pattern,wait=10000){
+async function scrape(url,pattern,wait=1200000){
 let ch;try{ch=(await import('playwright')).chromium}catch{console.log(JSON.stringify({error:'Playwright not installed',fix:'npm install -g playwright'}));process.exit(1)}
 const ck=loadCk();let br,usedCDP=false;
 try{br=await ch.connectOverCDP(CDP);usedCDP=true;console.error('[CDP] Connected to '+CDP)}
@@ -45,8 +45,8 @@ br=await ch.launch({headless:true,executablePath:ep,args:['--no-sandbox','--disa
 const ctx=usedCDP?br.contexts()[0]||await br.newContext():await br.newContext({userAgent:'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',viewport:{width:1440,height:900}});
 await ctx.addCookies(ck);const pg=await ctx.newPage(),res=[];
 pg.on('response',async r=>{if(r.url().includes(pattern))try{res.push(await r.json())}catch{}});
-try{console.error('[Nav] '+url);await pg.goto(url,{waitUntil:'domcontentloaded',timeout:30000});await pg.waitForTimeout(wait);
-const t=await pg.title();if(t.includes('Just a moment')){console.error('[CF] Challenge detected, waiting...');await pg.waitForTimeout(15000);
+try{console.error('[Nav] '+url);await pg.goto(url,{waitUntil:'domcontentloaded',timeout:1200000});await pg.waitForTimeout(wait);
+const t=await pg.title();if(t.includes('Just a moment')){console.error('[CF] Challenge detected, waiting...');await pg.waitForTimeout(60000);
 if((await pg.title()).includes('Just a moment')){await pg.close();if(!usedCDP)await br.close();
 return{error:'CLOUDFLARE_CHALLENGE',fix:'Cookies expired. Ask user for fresh J2Team cookies.'}}}
 await pg.close();if(!usedCDP)await br.close();
@@ -57,7 +57,7 @@ function dr(d=7){const e=new Date(),s=new Date();s.setDate(e.getDate()-d);return
 function burl(p,o){const[s,e]=dr(parseInt(o.days)||7);let u=`${B}${p}?language=vi-VN&currency=VND&region=${o.region||'VN'}&dateRange=%5B%22${s}%22%2C%22${e}%22%5D`;
 if(o.category)u+=`&category_id=${o.category}`;if(o.id)u+=`&id=${o.id}`;return u}
 function pa(a){const o={};for(let i=0;i<a.length;i++)if(a[i].startsWith('--')){const k=a[i].slice(2),v=a[i+1]&&!a[i+1].startsWith('--')?a[i+1]:'true';o[k]=v;if(v!=='true')i++}return o}
-const args=process.argv.slice(2),cmd=args[0],o=pa(args.slice(1)),w=parseInt(o.wait)||10000;
+const args=process.argv.slice(2),cmd=args[0],o=pa(args.slice(1)),w=parseInt(o.wait)||1200000;
 if(!cmd){console.log(JSON.stringify({commands:['creator-rank','product-rank','shop-rank','category','video-rank','live-rank','search']}));process.exit(0)}
 const m={'creator-rank':['/creator-rank','/api/creatorRank'],'product-rank':['/product-rank','/api/productRank'],'shop-rank':['/shop-rank','/api/shopRank'],
 category:[o.id?'/category/detail':'/category','/api/category'],'video-rank':['/video-rank','/api/videoRank'],'live-rank':['/live-rank','/api/liveRank'],
@@ -92,7 +92,7 @@ cd $(pwd) && node kalodata.mjs <command> [options]
 | `live-rank` | Livestream hot | `--region VN --days 7` |
 | `search` | Tìm kiếm | `--type creator --query "mỹ phẩm"` |
 
-**Options:** `--region` (VN/US/TH/MY/PH/ID/SG/GB), `--days` (7/14/30), `--category` (ID), `--wait` (ms, default 10000)
+**Options:** `--region` (VN/US/TH/MY/PH/ID/SG/GB), `--days` (7/14/30), `--category` (ID), `--wait` (ms, default 1200000 = 20 phút)
 
 ## ERROR HANDLING
 
