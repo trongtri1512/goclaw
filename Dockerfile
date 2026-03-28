@@ -55,11 +55,13 @@ RUN set -eux; \
         apk add --no-cache docker-cli; \
     fi; \
     if [ "$ENABLE_FULL_SKILLS" = "true" ]; then \
-        apk add --no-cache python3 py3-pip nodejs npm pandoc github-cli poppler-utils bash; \
+        apk add --no-cache python3 py3-pip nodejs npm pandoc github-cli poppler-utils bash \
+            chromium nss freetype harfbuzz ca-certificates ttf-freefont font-noto-cjk; \
         pip3 install --no-cache-dir --break-system-packages \
             pypdf openpyxl pandas python-pptx markitdown defusedxml lxml \
             pdfplumber pdf2image anthropic; \
-        npm install -g --cache /tmp/npm-cache docx pptxgenjs; \
+        PLAYWRIGHT_BROWSERS_PATH=/usr/lib \
+        npm install -g --cache /tmp/npm-cache docx pptxgenjs playwright; \
         rm -rf /tmp/npm-cache /root/.cache /var/cache/apk/*; \
     else \
         if [ "$ENABLE_PYTHON" = "true" ]; then \
@@ -120,7 +122,9 @@ ENV GOCLAW_CONFIG=/app/config.json \
     GOCLAW_SKILLS_DIR=/app/skills \
     GOCLAW_MIGRATIONS_DIR=/app/migrations \
     GOCLAW_HOST=0.0.0.0 \
-    GOCLAW_PORT=18790
+    GOCLAW_PORT=18790 \
+    PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser \
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 # Entrypoint runs as root to install persisted packages and start pkg-helper,
 # then drops to goclaw user via su-exec before starting the app.
