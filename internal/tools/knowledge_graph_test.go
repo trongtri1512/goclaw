@@ -13,8 +13,8 @@ import (
 // ── mock KG store ──────────────────────────────────────────────────
 
 type mockKGStore struct {
-	entities  map[string]store.Entity   // keyed by entity ID
-	relations []store.Relation          // all relations
+	entities  map[string]store.Entity            // keyed by entity ID
+	relations []store.Relation                   // all relations
 	traversal map[string][]store.TraversalResult // keyed by start entity ID
 }
 
@@ -89,12 +89,32 @@ func (m *mockKGStore) Traverse(_ context.Context, _, _, startEntityID string, _ 
 	return m.traversal[startEntityID], nil
 }
 
-func (m *mockKGStore) IngestExtraction(context.Context, string, string, []store.Entity, []store.Relation) error {
-	return nil
+func (m *mockKGStore) IngestExtraction(context.Context, string, string, []store.Entity, []store.Relation) ([]string, error) {
+	return nil, nil
 }
 
 func (m *mockKGStore) PruneByConfidence(context.Context, string, string, float64) (int, error) {
 	return 0, nil
+}
+
+func (m *mockKGStore) DedupAfterExtraction(context.Context, string, string, []string) (int, int, error) {
+	return 0, 0, nil
+}
+
+func (m *mockKGStore) ScanDuplicates(context.Context, string, string, float64, int) (int, error) {
+	return 0, nil
+}
+
+func (m *mockKGStore) ListDedupCandidates(context.Context, string, string, int) ([]store.DedupCandidate, error) {
+	return nil, nil
+}
+
+func (m *mockKGStore) MergeEntities(context.Context, string, string, string, string) error {
+	return nil
+}
+
+func (m *mockKGStore) DismissCandidate(context.Context, string, string) error {
+	return nil
 }
 
 func (m *mockKGStore) Stats(context.Context, string, string) (*store.GraphStats, error) {
@@ -102,7 +122,7 @@ func (m *mockKGStore) Stats(context.Context, string, string) (*store.GraphStats,
 }
 
 func (m *mockKGStore) SetEmbeddingProvider(store.EmbeddingProvider) {}
-func (m *mockKGStore) Close() error                                { return nil }
+func (m *mockKGStore) Close() error                                 { return nil }
 
 // ── test helpers ───────────────────────────────────────────────────
 
@@ -154,7 +174,7 @@ func setupBaseGraph() (*mockKGStore, map[string]string) {
 	// Pre-compute traversal results (mock outgoing-only behavior)
 	// A → B, C (outgoing from A)
 	ms.traversal[ids["A"]] = []store.TraversalResult{
-		{Entity: entities[1], Depth: 1, Via: "owns"},   // B=GoClaw
+		{Entity: entities[1], Depth: 1, Via: "owns"},    // B=GoClaw
 		{Entity: entities[2], Depth: 1, Via: "manages"}, // C=Dầu thô
 	}
 	// B → C (outgoing from B)
@@ -253,7 +273,7 @@ func TestKGTraversal_Tier2_CappedAt10(t *testing.T) {
 	ms.entities[entityX] = store.Entity{ID: entityX, AgentID: testAgentID.String(), UserID: testUserID, Name: "HubNode", EntityType: "concept"}
 
 	// Create 15 incoming relations to X
-	for i := 0; i < 15; i++ {
+	for i := range 15 {
 		srcID := uuid.NewString()
 		srcName := fmt.Sprintf("Source_%02d", i)
 		ms.entities[srcID] = store.Entity{ID: srcID, AgentID: testAgentID.String(), UserID: testUserID, Name: srcName, EntityType: "concept"}
@@ -339,7 +359,7 @@ func TestKGTraversal_Tier1_CappedAt20(t *testing.T) {
 
 	// Create 25 traversal results
 	var results []store.TraversalResult
-	for i := 0; i < 25; i++ {
+	for i := range 25 {
 		eid := uuid.NewString()
 		name := fmt.Sprintf("Node_%02d", i)
 		ms.entities[eid] = store.Entity{ID: eid, AgentID: testAgentID.String(), UserID: testUserID, Name: name, EntityType: "concept"}
@@ -369,7 +389,7 @@ func TestKGSearch_RelationsCappedAt5(t *testing.T) {
 	ms.entities[entityID] = store.Entity{ID: entityID, AgentID: testAgentID.String(), UserID: testUserID, Name: "HubEntity", EntityType: "concept"}
 
 	// Create 8 outgoing relations from entity
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		tgtID := uuid.NewString()
 		tgtName := fmt.Sprintf("Target_%02d", i)
 		ms.entities[tgtID] = store.Entity{ID: tgtID, AgentID: testAgentID.String(), UserID: testUserID, Name: tgtName, EntityType: "concept"}

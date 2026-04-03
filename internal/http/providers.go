@@ -2,8 +2,12 @@ package http
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -29,6 +33,8 @@ type ProvidersHandler struct {
 	cliMu           sync.Mutex                       // serializes Claude CLI provider create to prevent duplicates
 	msgBus          *bus.MessageBus
 	sysConfigStore  store.SystemConfigStore
+	tracingStore    store.TracingStore   // optional: for provider-scoped pool activity
+	agents          store.AgentCRUDStore // optional: for provider pool activity agent lookup
 }
 
 // NewProvidersHandler creates a handler for provider management endpoints.
@@ -57,6 +63,16 @@ func (h *ProvidersHandler) SetMCPServerLookup(lookup providers.MCPServerLookup) 
 // Used as fallback when DB providers have no api_base set.
 func (h *ProvidersHandler) SetAPIBaseFallback(fn func(providerType string) string) {
 	h.apiBaseFallback = fn
+}
+
+// SetTracingStore sets the tracing store for provider-scoped pool activity.
+func (h *ProvidersHandler) SetTracingStore(ts store.TracingStore) {
+	h.tracingStore = ts
+}
+
+// SetAgentStore sets the agent store for provider pool activity agent lookup.
+func (h *ProvidersHandler) SetAgentStore(as store.AgentCRUDStore) {
+	h.agents = as
 }
 
 // resolveAPIBase returns the provider's api_base, falling back to config/env if empty.
@@ -97,6 +113,9 @@ func (h *ProvidersHandler) RegisterRoutes(mux *http.ServeMux) {
 	// Provider + model verification (pre-flight check)
 	mux.HandleFunc("POST /v1/providers/{id}/verify", h.auth(h.handleVerifyProvider))
 	mux.HandleFunc("POST /v1/providers/{id}/verify-embedding", h.auth(h.handleVerifyEmbedding))
+
+	// Provider-scoped Codex pool activity monitor
+	mux.HandleFunc("GET /v1/providers/{id}/codex-pool-activity", h.auth(h.handleProviderCodexPoolActivity))
 
 	// Embedding system status
 	mux.HandleFunc("GET /v1/embedding/status", h.auth(h.handleEmbeddingStatus))
@@ -191,6 +210,47 @@ func (h *ProvidersHandler) registerInMemory(p *store.LLMProviderData) {
 	}
 }
 
+// validateProviderURL rejects provider base URLs pointing to internal/private networks.
+// Defense-in-depth: prevents SSRF when providers are later used for API calls.
+func validateProviderURL(rawURL string, providerType string) error {
+	if rawURL == "" || providerType == store.ProviderACP {
+		return nil
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	// Only allow http/https schemes — block file://, gopher://, dict://, etc.
+	switch u.Scheme {
+	case "http", "https":
+	default:
+		return fmt.Errorf("provider URL must use http or https scheme, got %q", u.Scheme)
+	}
+	host := u.Hostname()
+	// Block obvious internal targets
+	blocked := []string{"localhost", "127.0.0.1", "::1", "0.0.0.0", "169.254.169.254", "metadata.google.internal"}
+	for _, b := range blocked {
+		if strings.EqualFold(host, b) {
+			return fmt.Errorf("provider URL cannot point to %s", b)
+		}
+	}
+	// Block private IP ranges (normalize IPv6-mapped IPv4 to catch ::ffff:127.0.0.1)
+	ip := net.ParseIP(host)
+	if ip != nil {
+		if v4 := ip.To4(); v4 != nil {
+			ip = v4
+		}
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("provider URL cannot point to private network: %s", host)
+		}
+	}
+	// Block common internal hostnames
+	if strings.HasSuffix(host, ".internal") || strings.HasSuffix(host, ".local") {
+		return fmt.Errorf("provider URL cannot point to internal hostname: %s", host)
+	}
+	return nil
+}
+
 // --- Provider CRUD ---
 
 func (h *ProvidersHandler) handleListProviders(w http.ResponseWriter, r *http.Request) {
@@ -251,6 +311,15 @@ func (h *ProvidersHandler) handleCreateProvider(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	if err := validateProviderEmbeddingSettings(&p); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidRequest, err.Error())})
+		return
+	}
+
+	if err := validateProviderURL(p.APIBase, p.ProviderType); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 
 	if err := h.store.CreateProvider(r.Context(), &p); err != nil {
 		slog.Error("providers.create", "error", err)
@@ -307,17 +376,6 @@ func (h *ProvidersHandler) handleUpdateProvider(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	// Validate provider_type if being updated.
-	// IMPORTANT: Do NOT replace this with delete(updates, "provider_type").
-	// We must return 400 so the caller knows the value is invalid,
-	// silently deleting it would hide the error from the end user.
-	if pt, ok := updates["provider_type"]; ok {
-		if s, _ := pt.(string); !store.ValidProviderTypes[s] {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidRequest, "unsupported provider_type")})
-			return
-		}
-	}
-
 	// Strip masked API key — don't overwrite real value with "***"
 	if apiKey, ok := updates["api_key"]; ok {
 		if s, _ := apiKey.(string); s == "***" || s == "" {
@@ -338,9 +396,6 @@ func (h *ProvidersHandler) handleUpdateProvider(w http.ResponseWriter, r *http.R
 	if name, ok := updates["name"].(string); ok && name != "" {
 		candidate.Name = name
 	}
-	if providerType, ok := updates["provider_type"].(string); ok && providerType != "" {
-		candidate.ProviderType = providerType
-	}
 	if apiKey, ok := updates["api_key"].(string); ok {
 		candidate.APIKey = apiKey
 	}
@@ -353,6 +408,9 @@ func (h *ProvidersHandler) handleUpdateProvider(w http.ResponseWriter, r *http.R
 	if displayName, ok := updates["display_name"].(string); ok {
 		candidate.DisplayName = displayName
 	}
+	if pt, ok := updates["provider_type"].(string); ok && pt != "" {
+		candidate.ProviderType = pt
+	}
 	if settings, ok := updates["settings"]; ok {
 		rawSettings, err := marshalJSONRaw(settings)
 		if err != nil {
@@ -362,8 +420,39 @@ func (h *ProvidersHandler) handleUpdateProvider(w http.ResponseWriter, r *http.R
 		candidate.Settings = rawSettings
 	}
 
+	// Re-validate URLs against the (possibly new) provider type.
+	// When provider_type changes, existing api_base must also pass validation
+	// for the new type — prevents SSRF via ACP→non-ACP type switch.
+	typeChanged := candidate.ProviderType != currentProvider.ProviderType
+
+	if apiBase, ok := updates["api_base"]; ok {
+		if s, _ := apiBase.(string); s != "" {
+			if err := validateProviderURL(s, candidate.ProviderType); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+	} else if typeChanged && candidate.APIBase != "" {
+		if err := validateProviderURL(candidate.APIBase, candidate.ProviderType); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	if baseURL, ok := updates["base_url"]; ok {
+		if s, _ := baseURL.(string); s != "" {
+			if err := validateProviderURL(s, candidate.ProviderType); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+	}
+
 	if err := validateChatGPTOAuthProviderCandidate(r.Context(), h.store, id, &candidate); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := validateProviderEmbeddingSettings(&candidate); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": i18n.T(locale, i18n.MsgInvalidRequest, err.Error())})
 		return
 	}
 

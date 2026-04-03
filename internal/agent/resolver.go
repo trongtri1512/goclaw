@@ -26,6 +26,7 @@ import (
 // ResolverDeps holds shared dependencies for the agent resolver.
 type ResolverDeps struct {
 	AgentStore     store.AgentStore
+	ProviderStore  store.ProviderStore
 	ProviderReg    *providers.Registry
 	Bus            bus.EventPublisher
 	Sessions       store.SessionStore
@@ -134,15 +135,21 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 			provider, _ = deps.ProviderReg.GetForTenant(ag.TenantID, names[0])
 			slog.Warn("agent provider not found, using fallback",
 				"agent", agentKey, "wanted", ag.Provider, "using", names[0])
-			if tl := ag.ParseThinkingLevel(); tl != "" && tl != "off" {
+			if rc := ag.ParseReasoningConfig(); rc.Effort != "" && rc.Effort != "off" {
 				slog.Warn("agent thinking may not be supported by fallback provider",
-					"agent", agentKey, "thinking_level", tl,
+					"agent", agentKey, "thinking_level", rc.Effort,
 					"wanted_provider", ag.Provider, "fallback_provider", names[0])
 			}
 		}
 
 		if provider == nil {
 			return nil, fmt.Errorf("no provider available for agent %s", agentKey)
+		}
+		providerReasoningDefaults := (*store.ProviderReasoningConfig)(nil)
+		if deps.ProviderStore != nil {
+			if providerData, err := deps.ProviderStore.GetProviderByName(ctx, provider.Name()); err == nil && providerData != nil {
+				providerReasoningDefaults = store.ParseProviderReasoningConfig(providerData.Settings)
+			}
 		}
 
 		// Load bootstrap files from DB
@@ -240,6 +247,10 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 				workspace = config.TenantWorkspace(deps.Workspace, ag.TenantID, tenantSlug)
 			}
 		}
+		// Fallback to global workspace if per-agent workspace is empty
+		if workspace == "" && deps.Workspace != "" {
+			workspace = deps.Workspace
+		}
 		if workspace != "" {
 			if err := os.MkdirAll(workspace, 0755); err != nil {
 				slog.Warn("failed to create agent workspace directory", "workspace", workspace, "agent", agentKey, "error", err)
@@ -256,6 +267,7 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 		// one agent pollute the shared deps. Tools and become visible to ALL agents
 		// (even those without MCP grants), because FilterTools reads from registry.List().
 		hasMCPTools := false
+		var mcpUserCredSrvs []store.MCPAccessInfo
 		if deps.MCPStore != nil {
 			if toolsReg == deps.Tools {
 				toolsReg = deps.Tools.Clone()
@@ -268,20 +280,23 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 			mcpMgr := mcpbridge.NewManager(toolsReg, mcpOpts...)
 			if err := mcpMgr.LoadForAgent(ctx, ag.ID, ""); err != nil {
 				slog.Warn("failed to load MCP servers for agent", "agent", agentKey, "error", err)
-			} else if mcpMgr.IsSearchMode() {
-				// Search mode: too many tools — register mcp_tool_search meta-tool.
-				// Also wire lazy activator so deferred tools can be called by name directly.
-				toolsReg.SetDeferredActivator(mcpMgr.ActivateToolIfDeferred)
-				searchTool := mcpbridge.NewMCPToolSearchTool(mcpMgr)
-				toolsReg.Register(searchTool)
-				hasMCPTools = true
-				slog.Info("mcp.agent.search_mode", "agent", agentKey,
-					"deferred_tools", len(mcpMgr.DeferredToolInfos()))
 			} else {
-				toolNames := mcpMgr.ToolNames()
-				if len(toolNames) > 0 {
+				mcpUserCredSrvs = mcpMgr.UserCredServers()
+				if mcpMgr.IsSearchMode() {
+					// Search mode: too many tools — register mcp_tool_search meta-tool.
+					// Also wire lazy activator so deferred tools can be called by name directly.
+					toolsReg.SetDeferredActivator(mcpMgr.ActivateToolIfDeferred)
+					searchTool := mcpbridge.NewMCPToolSearchTool(mcpMgr)
+					toolsReg.Register(searchTool)
 					hasMCPTools = true
-					slog.Info("mcp.agent.tools_loaded", "agent", agentKey, "tools", len(toolNames))
+					slog.Info("mcp.agent.search_mode", "agent", agentKey,
+						"deferred_tools", len(mcpMgr.DeferredToolInfos()))
+				} else {
+					toolNames := mcpMgr.ToolNames()
+					if len(toolNames) > 0 {
+						hasMCPTools = true
+						slog.Info("mcp.agent.tools_loaded", "agent", agentKey, "tools", len(toolNames))
+					}
 				}
 			}
 		}
@@ -384,7 +399,7 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 			SandboxWorkspaceAccess: sandboxWorkspaceAccess,
 			BuiltinToolSettings:    builtinSettings,
 			DisabledTools:          disabledTools,
-			ThinkingLevel:          ag.ParseThinkingLevel(),
+			ReasoningConfig:        store.ResolveEffectiveReasoningConfig(providerReasoningDefaults, ag.ParseReasoningConfig()),
 			SelfEvolve:             ag.ParseSelfEvolve(),
 			SkillEvolve:            ag.AgentType == store.AgentTypePredefined && ag.ParseSkillEvolve(),
 			SkillNudgeInterval:     ag.ParseSkillNudgeInterval(),
@@ -398,6 +413,9 @@ func NewManagedResolver(deps ResolverDeps) ResolverFunc {
 			BudgetMonthlyCents:     derefInt(ag.BudgetMonthlyCents),
 			TracingStore:           deps.TracingStore,
 			MemoryStore:            deps.MemoryStore,
+			MCPStore:               deps.MCPStore,
+			MCPPool:                deps.MCPPool,
+			MCPUserCredSrvs:        mcpUserCredSrvs,
 		})
 
 		slog.Info("resolved agent from DB", "agent", agentKey, "model", ag.Model, "provider", ag.Provider)
