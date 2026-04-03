@@ -140,6 +140,8 @@ services:
       - goclaw-net
     depends_on:
       - goclaw
+    volumes:
+      - ./ui/web/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     restart: unless-stopped
 
 volumes:
