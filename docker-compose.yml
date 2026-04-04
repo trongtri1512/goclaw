@@ -60,8 +60,8 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
-          cpus: '2.0'
+          memory: 4G
+          cpus: '4.0'
     restart: unless-stopped
 
   # ── GoClaw (core) ──
