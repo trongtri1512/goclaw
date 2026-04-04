@@ -126,15 +126,23 @@ function saveCookies(input) {
 async function scrapeWithBrowser(pageUrl, apiPattern, opts = {}) {
   let chromium;
   try {
-    const pw = await import('playwright');
-    chromium = pw.chromium;
+    const pwExtra = await import('playwright-extra');
+    chromium = pwExtra.chromium;
+    const stealth = (await import('puppeteer-extra-plugin-stealth')).default();
+    chromium.use(stealth);
+    console.error('[Browser] Loaded Stealth mode plugins successfully.');
   } catch {
-    console.log(JSON.stringify({
-      error: 'Playwright not installed',
-      fix: 'Run: npm install -g playwright && npx playwright install chromium',
-      alternative: 'Or install via: pip3 install playwright && playwright install chromium',
-    }));
-    process.exit(1);
+    console.warn('[Browser] Stealth plugin not found, falling back to standard Playwright...');
+    try {
+      const pw = await import('playwright');
+      chromium = pw.chromium;
+    } catch {
+      console.log(JSON.stringify({
+        error: 'Playwright not installed',
+        fix: 'Run: npm install -g playwright playwright-extra puppeteer-extra-plugin-stealth',
+      }));
+      process.exit(1);
+    }
   }
 
   const cookies = loadCookies();

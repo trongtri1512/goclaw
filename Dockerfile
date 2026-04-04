@@ -79,9 +79,9 @@ RUN set -eux; \
             chromium nss freetype harfbuzz ca-certificates ttf-freefont font-noto-cjk; \
         pip3 install --no-cache-dir --break-system-packages \
             pypdf openpyxl pandas python-pptx markitdown defusedxml lxml \
-            pdfplumber pdf2image anthropic; \
+            pdfplumber pdf2image anthropic playwright-stealth; \
         PLAYWRIGHT_BROWSERS_PATH=/usr/lib \
-        npm install -g --cache /tmp/npm-cache docx pptxgenjs playwright; \
+        npm install -g --cache /tmp/npm-cache docx pptxgenjs playwright playwright-extra puppeteer-extra-plugin-stealth; \
         rm -rf /tmp/npm-cache /root/.cache /var/cache/apk/*; \
     else \
         if [ "$ENABLE_PYTHON" = "true" ]; then \
