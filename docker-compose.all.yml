@@ -1,0 +1,174 @@
+# All-in-one docker-compose — merged from upstream modular overlays.
+# Equivalent to: docker-compose.yml + postgres + browser + selfservice + upgrade
+#
+# Upstream version: v3.11.2 (synced 2026-04-26)
+#
+# Usage:
+#   docker compose -f docker-compose.all.yml up -d
+#   docker compose -f docker-compose.all.yml run --rm upgrade  # run DB migrations
+
+services:
+  goclaw:
+    image: ghcr.io/nextlevelbuilder/goclaw:latest
+    build:
+      context: ${GOCLAW_DIR:-.}
+      dockerfile: Dockerfile
+      args:
+        ENABLE_OTEL: "${ENABLE_OTEL:-false}"
+        ENABLE_EMBEDUI: "${ENABLE_EMBEDUI:-true}"
+        ENABLE_PYTHON: "${ENABLE_PYTHON:-true}"
+        ENABLE_FULL_SKILLS: "${ENABLE_FULL_SKILLS:-false}"
+        VERSION: "${GOCLAW_VERSION:-dev}"
+    ports:
+      - "${GOCLAW_PORT:-18790}:18790"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - GOCLAW_HOST=0.0.0.0
+      - GOCLAW_PORT=18790
+      - GOCLAW_CONFIG=/app/data/config.json
+      - GOCLAW_GATEWAY_TOKEN=${GOCLAW_GATEWAY_TOKEN:-}
+      - GOCLAW_ENCRYPTION_KEY=${GOCLAW_ENCRYPTION_KEY:-}
+      - GOCLAW_SKILLS_DIR=/app/data/skills
+      # Debug
+      - GOCLAW_TRACE_VERBOSE=${GOCLAW_TRACE_VERBOSE:-0}
+      # Postgres (from postgres overlay)
+      - GOCLAW_POSTGRES_DSN=postgres://${POSTGRES_USER:-goclaw}:${POSTGRES_PASSWORD:-goclaw}@postgres:5432/${POSTGRES_DB:-goclaw}?sslmode=disable
+      # Browser (from browser overlay)
+      - GOCLAW_BROWSER_REMOTE_URL=ws://chrome:9222
+    volumes:
+      - goclaw-data:/app/data
+      - goclaw-workspace:/app/workspace
+      # Custom skill bind-mounts
+      - ./skills/finance-analysis:/app/data/skills/finance-analysis
+      - ./skills/dms-imv:/app/data/skills/dms-imv
+      # Postgres overlay volumes
+      - goclaw-skills:/app/skills
+      - goclaw-workspace:/app/.goclaw
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+      - CHOWN
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '8.0'
+          pids: 2000
+    networks:
+      - default
+      - goclaw-net
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      chrome:
+        condition: service_healthy
+
+  postgres:
+    image: pgvector/pgvector:pg18
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-goclaw}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-goclaw}
+      POSTGRES_DB: ${POSTGRES_DB:-goclaw}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-goclaw} -d ${POSTGRES_DB:-goclaw}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  goclaw-ui:
+    image: ghcr.io/nextlevelbuilder/goclaw-web:latest
+    build:
+      context: ${GOCLAW_DIR:-.}/ui/web
+      dockerfile: Dockerfile
+    ports:
+      - "${GOCLAW_UI_PORT:-3000}:80"
+    networks:
+      - default
+      - goclaw-net
+    depends_on:
+      - goclaw
+    restart: unless-stopped
+    stop_signal: SIGTERM
+
+  # Chrome sidecar — headless Chrome for browser automation tool.
+  # chromedp/headless-shell auto-tracks Google Chrome for Testing and serves
+  # raw CDP on :9222. Replaces zenika/alpine-chrome:124 (stopped publishing).
+  chrome:
+    image: chromedp/headless-shell:latest
+    command:
+      - --no-sandbox
+      # New headless (Chrome 112+) required for --load-extension to work.
+      - --headless=new
+      - --remote-allow-origins=*
+      - --disable-gpu
+      - --disable-dev-shm-usage
+    ports:
+      - "${CHROME_CDP_PORT:-9222}:9222"
+    shm_size: 2gb
+    healthcheck:
+      # chromedp/headless-shell is minimal — no wget/curl/nc. Use bash's
+      # /dev/tcp builtin to probe the CDP port directly.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9222"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+          cpus: '4.0'
+    restart: unless-stopped
+
+  # One-shot database upgrade/migration service.
+  # Usage: docker compose -f docker-compose.all.yml run --rm upgrade
+  upgrade:
+    image: ghcr.io/nextlevelbuilder/goclaw:latest
+    build:
+      context: ${GOCLAW_DIR:-.}
+      dockerfile: Dockerfile
+      args:
+        ENABLE_OTEL: "false"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - GOCLAW_POSTGRES_DSN=postgres://${POSTGRES_USER:-goclaw}:${POSTGRES_PASSWORD:-goclaw}@postgres:5432/${POSTGRES_DB:-goclaw}?sslmode=disable
+      - GOCLAW_CONFIG=/app/data/config.json
+      - GOCLAW_MIGRATIONS_DIR=/app/migrations
+      - GOCLAW_ENCRYPTION_KEY=${GOCLAW_ENCRYPTION_KEY:-}
+    volumes:
+      - goclaw-data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/app/goclaw"]
+    command: ["upgrade"]
+    restart: "no"
+
+networks:
+  goclaw-net:
+    name: goclaw-net
+    driver: bridge
+
+volumes:
+  goclaw-data:
+  goclaw-workspace:
+  goclaw-skills:
+  postgres-data:
