@@ -76,8 +76,9 @@ func (p *OpenAIEmbeddingProvider) Embed(ctx context.Context, texts []string) ([]
 
 func (p *OpenAIEmbeddingProvider) embedBatch(ctx context.Context, texts []string) ([][]float32, error) {
 	reqBody := map[string]any{
-		"model": p.model,
-		"input": texts,
+		"model":      p.model,
+		"input":      texts,
+		"dimensions": ExpectedEmbeddingDim, // request exactly 1536d — required for DashScope text-embedding-v4, harmless for OpenAI
 	}
 
 	return RetryDo(ctx, p.retry, func() ([][]float32, error) {
