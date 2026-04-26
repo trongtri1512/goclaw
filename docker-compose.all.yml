@@ -17,7 +17,8 @@ services:
         ENABLE_OTEL: "${ENABLE_OTEL:-false}"
         ENABLE_EMBEDUI: "${ENABLE_EMBEDUI:-true}"
         ENABLE_PYTHON: "${ENABLE_PYTHON:-true}"
-        ENABLE_FULL_SKILLS: "${ENABLE_FULL_SKILLS:-false}"
+        ENABLE_NODE: "${ENABLE_NODE:-true}"
+        ENABLE_FULL_SKILLS: "${ENABLE_FULL_SKILLS:-true}"
         VERSION: "${GOCLAW_VERSION:-dev}"
     ports:
       - "${GOCLAW_PORT:-18790}:18790"
